@@ -1,0 +1,511 @@
+;//-----------------------------------------------------------------
+;// Process 
+;//-----------------------------------------------------------------
+entry DO_PROCESS
+returns numeric
+    params
+        string P_GROUP : IN
+        string P_USER_LIST : IN ;comma separated list       
+        string P_MESSAGE : OUT
+        numeric P_STATUS : OUT
+    endparams
+    variables
+        string V_USER_LIST
+        string V_USER
+        string V_RESPONSE
+        string V_GROUP
+        string V_CREDENTIALS
+        string V_MESSAGE
+        numeric V_STATUS
+    endvariables
+
+;// guards
+    if (P_GROUP = <NULL>)
+        P_MESSAGE = "Please specify a group"
+        P_STATUS = <ERROR>
+        return <FAIL>
+    endif
+    if (P_USER_LIST = <NULL>)
+        P_MESSAGE = "Please specify a list of comma separated users"
+        P_STATUS = <ERROR>
+        return <FAIL>
+    endif
+
+;init 
+    V_USER_LIST = $replace(P_USER_LIST, 1, ",", "·;", -1)
+    V_GROUP = P_GROUP
+
+;process
+    ;// get group
+    V_RESPONSE = IAM_GET_GROUP(V_GROUP, V_MESSAGE, V_STATUS)
+    if (V_RESPONSE = <NULL> | V_STATUS = <FAIL> | $status < 0)
+
+        ;// not exist - create group
+        V_RESPONSE = IAM_CREATE_GROUP(V_GROUP, V_MESSAGE, V_STATUS)
+        if (V_RESPONSE = <NULL> | V_STATUS = <FAIL> | $status < 0)
+            P_MESSAGE = "Failed to create group %%V_GROUP%%%. %%V_RESPONSE%%%"
+            P_STATUS = <ERROR>
+            return <FAIL>
+        endif
+
+    endif
+
+    ;// For each user, if NOT exists, create user, add to group and create access key
+    forlist V_USER in V_USER_LIST
+        ;Get user
+        V_RESPONSE = IAM_GET_USER(V_USER, V_MESSAGE, V_STATUS)
+        if (V_RESPONSE != <NULL>)
+            putmess "User %%V_USER%%% exists - skipping"
+            P_MESSAGE = $concat(P_MESSAGE, "User %%V_USER%%% exists - skipping","%%^")
+            P_STATUS = <INFO>
+        else 
+            ;create user
+            V_RESPONSE = IAM_CREATE_USER(V_USER, V_MESSAGE, V_STATUS)
+            if (V_STATUS = <ERROR>)
+                P_MESSAGE = $concat(P_MESSAGE, V_MESSAGE, "%%^")
+                P_STATUS = <INFO>
+            else
+                ;add user to group
+                V_RESPONSE = IAM_ADD_USER_TO_GROUP(V_USER, V_GROUP, V_MESSAGE, V_STATUS)
+                V_RESPONSE = IAM_CREATE_ACCESS_KEY(V_USER, V_MESSAGE, V_STATUS)
+                V_CREDENTIALS = IAM_EXTRACT_CREDENTIALS(V_RESPONSE, V_MESSAGE, V_STATUS)
+
+                ;// todo
+                ;// encrypt credentials at REST & store
+
+                P_MESSAGE = $concat(P_MESSAGE, $replace(V_CREDENTIALS,1,"·;","%%^",-1),"%%^")
+                P_STATUS = <INFO>
+            endif
+        endif
+
+    endfor
+
+;Return
+    return <SUCCESS>
+end
+
+;//----------------------------------------------------------------------
+;// Get the Group
+;//----------------------------------------------------------------------
+entry IAM_EXTRACT_CREDENTIALS
+returns string
+params
+    string P_RESPONSE : IN
+    string P_MESSAGE : OUT
+    numeric P_STATUS : OUT
+endparams
+variables
+    struct V_STRUCT
+    string V_SECRET_ACCESS_KEY
+    string V_ACCESS_KEY_ID
+    string V_USER
+    string V_RETURN
+endvariables
+
+;guards
+    if (P_RESPONSE = <NULL>)
+        P_MESSAGE = "Missing parameter P_RESPONSE"
+        P_STATUS = <ERROR>
+        return <NULL>
+    endif
+        
+;init
+
+;process
+    jsontostruct V_STRUCT, P_RESPONSE
+    if ($status = 0)
+        V_USER = V_STRUCT->*->UserName->*
+        V_SECRET_ACCESS_KEY = V_STRUCT->*->SecretAccessKey->*
+        V_ACCESS_KEY_ID = V_STRUCT->*->AccessKeyId->*
+    else
+        P_MESSAGE = "Error occurred converting json to struct"
+        P_STATUS = <ERROR>
+        return <FAIL>
+    endif
+
+    putitem/id V_RETURN, "USER", V_USER
+    putitem/id V_RETURN, "SECRET_ACCESS_KEY", V_SECRET_ACCESS_KEY
+    putitem/id V_RETURN, "ACCESS_KEY_ID", V_ACCESS_KEY_ID
+
+;return
+    return V_RETURN
+end
+
+;//----------------------------------------------------------------------
+;// Get the Group
+;//----------------------------------------------------------------------
+entry IAM_GET_GROUP
+returns string
+params
+    string P_GROUP : IN
+    string P_MESSAGE : OUT
+    numeric P_STATUS : OUT
+endparams
+variables
+    string V_RESPONSE
+endvariables
+
+;guards
+    if (P_GROUP = <NULL>)
+        P_MESSAGE = "Missing group"
+        P_STATUS = <ERROR>
+        return <NULL>
+    endif
+        
+;init
+
+;process
+    lfiledump "aws iam get-group --group-name %%P_GROUP --profile <PROFILE> > <BASE_DIR>\get-group.resp.txt", "<BASE_DIR>\run.cmd"
+    spawn "#<BASE_DIR>\run.cmd"
+    lfileload "<BASE_DIR>\get-group.resp.txt", V_RESPONSE
+    if ($status < 0 | V_RESPONSE = <NULL>)
+        P_MESSAGE = "$status=%%$status%%^Response=%%V_RESPONSE"
+        P_STATUS = <FAIL>
+        return <NULL>
+    endif
+
+    P_MESSAGE = "$status=%%$status%%^Response=%%V_RESPONSE"
+    P_STATUS = <INFO>
+
+    return V_RESPONSE
+end
+
+;//----------------------------------------------------------------------
+;// Create the Group
+;//----------------------------------------------------------------------
+entry IAM_CREATE_GROUP
+returns string
+params
+    string P_GROUP : IN
+    string P_MESSAGE : OUT
+    numeric P_STATUS : OUT
+endparams
+variables
+    string V_RESPONSE
+endvariables
+
+;guards
+    if (P_GROUP = <NULL>)
+        P_MESSAGE = "Missing group"
+        P_STATUS = <ERROR>
+        return <NULL>
+    endif
+
+;init
+
+;process
+    lfiledump "aws iam create-group --group-name %%P_GROUP --profile <PROFILE> > <BASE_DIR>\create-group.resp.txt", "<BASE_DIR>\run.cmd"
+    spawn "#<BASE_DIR>\run.cmd"
+    lfileload "<BASE_DIR>\create-group.resp.txt", V_RESPONSE
+    if ($status < 0 | V_RESPONSE = <NULL>) 
+        P_MESSAGE = "$status=%%$status%%^Response=%%V_RESPONSE"
+        P_STATUS = <FAIL>
+        return <NULL>
+    endif
+
+;return
+    P_MESSAGE = "$status=%%$status%%^Response=%%V_RESPONSE"
+    P_STATUS = <INFO>
+
+    return V_RESPONSE
+end
+
+;//----------------------------------------------------------------------
+;// Create the User
+;//----------------------------------------------------------------------
+entry IAM_CREATE_USER
+returns string
+params
+    string P_USER : IN
+    string P_MESSAGE : OUT
+    numeric P_STATUS : OUT
+endparams
+variables
+    string V_RESPONSE
+endvariables
+
+;guards
+    if (P_USER = <NULL>)
+        P_MESSAGE = "Missing user"
+        P_STATUS = <ERROR>
+        return <NULL>
+    endif
+;init
+
+;process
+    lfiledump "aws iam create-user --user-name %%P_USER%%% --profile <PROFILE> > <BASE_DIR>\create-user.resp.txt", "<BASE_DIR>\run.cmd"
+    spawn "#<BASE_DIR>\run.cmd"
+    lfileload "<BASE_DIR>\create-user.resp.txt", V_RESPONSE
+    if ($status < 0 | V_RESPONSE = <NULL>) 
+        P_MESSAGE = "$status=%%$status%%^Response=%%V_RESPONSE"
+        P_STATUS = <ERROR>
+        return <NULL>
+    endif
+
+;return
+    P_MESSAGE = "$status=%%$status%%^Response=%%V_RESPONSE"
+    P_STATUS = <INFO>
+
+    return V_RESPONSE
+end
+
+;//----------------------------------------------------------------------
+;// Get the User
+;//----------------------------------------------------------------------
+entry IAM_GET_USER
+returns string
+params
+    string P_USER :IN
+    string P_MESSAGE : OUT
+    numeric P_STATUS : OUT
+endparams
+variables
+    string V_RESPONSE
+endvariables
+
+;guards
+    if (P_USER = <NULL>)
+        P_MESSAGE = "Missing user"
+        P_STATUS = <ERROR>
+        return <NULL>
+    endif
+;init
+
+;process
+    lfiledump "aws iam get-user --user-name %%P_USER%%% --profile <PROFILE> > <BASE_DIR>\get-user.resp.txt", "<BASE_DIR>\run.cmd"
+    spawn "#<BASE_DIR>\run.cmd"
+    lfileload "<BASE_DIR>\get-user.resp.txt", V_RESPONSE
+    if ($status < 0 | V_RESPONSE = <NULL>) 
+        P_MESSAGE = "$status=%%$status%%^Response=%%V_RESPONSE"
+        P_STATUS = <ERROR>
+        return <NULL>
+    endif
+
+;return
+    P_MESSAGE = <NULL>
+    P_STATUS = <INFO>
+    return V_RESPONSE
+end
+
+;//----------------------------------------------------------------------
+;// Delete the User
+;//----------------------------------------------------------------------
+entry IAM_DELETE_USER
+returns string
+params
+    string P_USER : IN
+    string P_MESSAGE : OUT
+    numeric P_STATUS : OUT
+endparams
+variables
+    string V_RESPONSE
+endvariables
+
+;guards
+    if (P_USER = <NULL>)
+        P_MESSAGE = "Missing user"
+        P_STATUS = <ERROR>
+        return <NULL>
+    endif
+;init
+
+;process
+    lfiledump "aws iam delete-user --user-name %%P_USER%%% --profile <PROFILE> > <BASE_DIR>\del-user.resp.txt", "<BASE_DIR>\run.cmd"
+    spawn "#<BASE_DIR>\run.cmd"
+    lfileload "<BASE_DIR>\delete-user.resp.txt", V_RESPONSE
+    if ($status < 0 | V_RESPONSE = <NULL>)
+        P_MESSAGE = "$status=%%$status%%^Response=%%V_RESPONSE"
+        P_STATUS = <ERROR>
+        return <NULL>
+    endif
+
+;return
+    P_MESSAGE = <NULL>
+    P_STATUS = <INFO>
+    return V_RESPONSE
+end
+
+;//----------------------------------------------------------------------
+;// Add the User To Group
+;//----------------------------------------------------------------------
+entry IAM_ADD_USER_TO_GROUP
+returns string
+params
+    string P_USER :IN
+    string P_GROUP : IN
+    string P_MESSAGE : OUT
+    numeric P_STATUS : OUT
+endparams
+variables
+    string V_RESPONSE
+endvariables
+
+;guards
+    if (P_USER = <NULL>)
+        P_MESSAGE = "Missing user"
+        P_STATUS = <ERROR>
+        return <NULL>
+    endif
+
+    if (P_GROUP = <NULL>)
+        P_MESSAGE = "Missing group"
+        P_STATUS = <ERROR>
+        return <NULL>
+    endif
+
+;init
+
+;process
+    lfiledump "aws iam add-user-to-group --user-name %%P_USER%%% --group-name %%P_GROUP --profile <PROFILE> > <BASE_DIR>\add-user-to-grp.resp.txt", "<BASE_DIR>\run.cmd"
+    spawn "#<BASE_DIR>\run.cmd"
+
+;return
+    return V_RESPONSE
+end
+
+;//----------------------------------------------------------------------
+;// Create Access Key For User
+;//----------------------------------------------------------------------
+entry IAM_CREATE_ACCESS_KEY
+returns string
+params
+    string P_USER : IN
+    string P_MESSAGE : OUT
+    numeric P_STATUS : OUT
+endparams
+variables
+    string V_RESPONSE
+endvariables
+
+;guards
+    if (P_USER = <NULL>)
+        P_MESSAGE = "missing user"
+        P_STATUS = <ERROR>
+        return <NULL>
+    endif
+
+;init
+
+;process
+    lfiledump "aws iam create-access-key --user-name %%P_USER%%% --profile <PROFILE> > <BASE_DIR>\access-key.resp.txt", "<BASE_DIR>\run.cmd"
+    spawn "#<BASE_DIR>\run.cmd"
+    lfileload "<BASE_DIR>\access-key.resp.txt", V_RESPONSE
+    if ($status < 0 | V_RESPONSE = <NULL>) 
+        P_MESSAGE = "$status=%%$status%%^Response=%%V_RESPONSE"
+        P_STATUS = <ERROR>
+        return <NULL>
+    endif
+
+;return
+    P_MESSAGE = "$status=%%$status%%^Response=%%V_RESPONSE"
+    P_STATUS = <INFO>
+    return V_RESPONSE
+end
+
+;//----------------------------------------------------------------------
+;// Delete Access Keys For User
+;//----------------------------------------------------------------------
+entry IAM_DELETE_ACCESS_KEYS
+returns string
+params
+    string P_USER : IN
+    string P_MESSAGE : OUT
+    numeric P_STATUS : OUT
+endparams
+variables
+    numeric V_I
+    numeric V_COUNT
+    string V_RESPONSE
+    string V_ACCESS_KEY_ID
+    struct V_STRUCT
+endvariables
+
+;guards
+    if (P_USER = <NULL>)
+        P_MESSAGE = "Missing user"
+        P_STATUS = <ERROR>
+        return <NULL>
+    endif
+
+;init
+
+;process
+    lfiledump "aws iam list-access-keys --user-name %%P_USER%%% --profile <PROFILE> > <BASE_DIR>\list-access-keys.resp.txt", "<BASE_DIR>\run.cmd"
+    spawn "#<BASE_DIR>\run.cmd"
+    lfileload "<BASE_DIR>\list-access-keys.resp.txt", V_RESPONSE
+    if ($status < 0 | V_RESPONSE = <NULL>) 
+        P_MESSAGE = "$status=%%$status%%^Response=%%V_RESPONSE"
+        P_STATUS = <ERROR>
+        return <NULL>
+    endif
+
+    ;// json to struct
+    jsontostruct V_STRUCT, V_RESPONSE
+    if ($status < 0 | V_RESPONSE = <NULL>) 
+        P_MESSAGE = "$status=%%$status%%^Response=%%V_RESPONSE"
+        P_STATUS = <ERROR>
+        return <NULL>
+    endif
+    
+    ;// extract each access key id
+    V_I = v_struct->AccessKeyMetadata->$membercount
+    V_COUNT = 1
+    while (V_COUNT <= V_I)
+        V_ACCESS_KEY_ID = v_struct->AccessKeyMetadata->*{V_COUNT}->AccessKeyId
+
+        ;// for each access key, delete access key
+        lfiledump "aws iam delete-access-key --user-name %%P_USER%%% --access-key %%V_ACCESS_KEY_ID --profile <PROFILE> > <BASE_DIR>\delete-access-keys.resp.txt", "<BASE_DIR>\run.cmd"
+        spawn "#<BASE_DIR>\run.cmd"
+
+        V_COUNT = V_COUNT + 1
+    endwhile
+
+;return
+    return <NULL>
+end
+
+
+;//----------------------------------------------------------------------
+;// Remove User From Group
+;//----------------------------------------------------------------------
+entry IAM_REMOVE_USER_FROM_GROUP
+returns string
+params
+    string P_USER : IN
+    string P_GROUP : IN
+    string P_MESSAGE : OUT
+    numeric P_STATUS : OUT
+endparams
+variables
+    string V_RESPONSE
+endvariables
+
+;guards
+    if (P_USER = <NULL>)
+        P_MESSAGE = "Missing user"
+        P_STATUS = <ERROR>
+        return <NULL>
+    endif
+
+    if (P_GROUP = <NULL>)
+        P_MESSAGE = "Missing group"
+        P_STATUS = <ERROR>
+        return <NULL>
+    endif
+
+;init
+
+;process
+
+    lfiledump "aws iam remove-user-from-group --user-name %%P_USER%%% --group-name %%P_GROUP --profile <PROFILE> > <BASE_DIR>\remove-user-from-group.resp.txt", "<BASE_DIR>\run.cmd"
+    spawn "#<BASE_DIR>\run.cmd"
+    lfileload "<BASE_DIR>\remove-user-from-group.resp.txt", V_RESPONSE
+    if ($status < 0 | V_RESPONSE = <NULL>) 
+        P_MESSAGE = "$status=%%$status%%^Response=%%V_RESPONSE"
+        P_STATUS = <ERROR>
+        return <NULL>
+    endif
+
+;return
+    return V_RESPONSE
+end
