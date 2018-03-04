@@ -1,0 +1,16 @@
+#define NULL = ""
+#define SUCCESS = 0
+#define FAIL = -1
+#define LF  $string("&#0010;")
+#define ERROR = -1
+#define WARN = -2
+#define INFO = -3
+
+#define BASE_DIR = c:\temp\_aws\___TEST
+#define PROFILE = AWS-test-account
+
+#define TEST_RETURN_PASS = 1
+#define TEST_RETURN_FAIL = 0
+#define TEST_PASS_MSG = %%$datim:PASS
+#define TEST_FAIL_MSG = %%$datim:FAIL
+#define TEST_RUN = %%$datim:RUN:
